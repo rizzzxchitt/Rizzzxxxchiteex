@@ -1,0 +1,108 @@
+-- 1. MEMANGGIL UI LIBRARY RAYFIELD
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu'))()
+
+-- 2. MEMBUAT JENDELA UTAMA
+local Window = Rayfield:CreateWindow({
+   Name = "Rizzzxxchiter | Violence District",
+   LoadingTitle = "Memuat Skrip Premium...",
+   LoadingSubtitle = "by Rizzzxxchiter",
+   ConfigurationSaving = { Enabled = false }
+})
+
+-- 3. MEMBUAT TAB KATEGORI BARU
+local TabCombat = Window:CreateTab("Combat & Aim", 4483362458) 
+local TabVisuals = Window:CreateTab("Visuals / ESP", 4483362458)
+local TabAutomation = Window:CreateTab("Automation", 4483362458)
+
+-- =========================================================
+-- TAB COMBAT: AUTO PARRY & AIM LOCK PISTOL
+-- =========================================================
+local AutoParryAktif = false
+local AimLockAktif = false
+
+-- Tombol Auto Parry
+TabCombat:CreateToggle({
+   Name = "Aktifkan Auto Parry",
+   CurrentValue = false,
+   Flag = "ToggleAutoParry", 
+   Callback = function(Value)
+      AutoParryAktif = Value
+      if AutoParryAktif then
+          task.spawn(function()
+              while AutoParryAktif do
+                  task.wait()
+                  -- Logika deteksi jarak serangan masuk di sini
+              end
+          end)
+      end
+   end,
+})
+
+-- Tombol Aim Lock Pistol
+TabCombat:CreateToggle({
+   Name = "Aim Lock Pistol (Target Kepala)",
+   CurrentValue = false,
+   Flag = "ToggleAimLock", 
+   Callback = function(Value)
+      AimLockAktif = Value
+      if AimLockAktif then
+          task.spawn(function()
+              while AimLockAktif do
+                  task.wait()
+                  -- Logika mengunci kamera ke kepala musuh terdekat
+              end
+          end)
+      end
+   end,
+})
+
+-- =========================================================
+-- TAB VISUALS: ESP KILLER & ESP SURVIVOR
+-- =========================================================
+local EspKillerAktif = false
+local EspSurvivorAktif = false
+
+-- Tombol ESP Killer (Warna Merah)
+TabVisuals:CreateToggle({
+   Name = "ESP Killer (Garis Merah)",
+   CurrentValue = false,
+   Flag = "ToggleEspKiller", 
+   Callback = function(Value)
+      EspKillerAktif = Value
+      -- Logika membuat highlight / box merah pada Killer
+   end,
+})
+
+-- Tombol ESP Survivor (Warna Hijau)
+TabVisuals:CreateToggle({
+   Name = "ESP Survivor (Garis Hijau)",
+   CurrentValue = false,
+   Flag = "ToggleEspSurvivor", 
+   Callback = function(Value)
+      EspSurvivorAktif = Value
+      -- Logika membuat highlight / box hijau pada Survivor
+   end,
+})
+
+-- =========================================================
+-- TAB AUTOMATION: AUTO GENERATOR PERFECT
+-- =========================================================
+local AutoGenAktif = false
+
+-- Tombol Auto Generator Perfect
+TabAutomation:CreateToggle({
+   Name = "Auto Generator (Perfect Skill Check)",
+   CurrentValue = false,
+   Flag = "ToggleAutoGen", 
+   Callback = function(Value)
+      AutoGenAktif = Value
+      if AutoGenAktif then
+          task.spawn(function()
+              while AutoGenAktif do
+                  task.wait()
+                  -- Logika otomatis menekan tombol saat jarum di zona perfect
+              end
+          end)
+      end
+   end,
+})

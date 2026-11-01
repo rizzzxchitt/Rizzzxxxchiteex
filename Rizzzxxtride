@@ -1,11 +1,371 @@
---[[rscripts:analytics:start]]
--- Script analytics (enabled by the creator on rscripts.net).
--- Runs in its own thread and cannot affect the script below.
-task.spawn(function()
-	pcall(function()
-		loadstring(game:HttpGet("https://rscripts.net/api/telemetry/v2/client.lua?s=6ae57c80fb83000c194671e9"))()
-	end)
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+local P = game:GetService("Players").LocalPlayer
+local CFG = table.freeze({ PLACE = 116463962153167, WAIT = 0.2, SETTLE = 0.8, ACK = 20, FLOOR_TIMEOUT = 240, FINAL_TIMEOUT = 360, SEARCH_LIMIT = 100000, ROTATIONS = 8, MAX_ATTEMPTS = 2, HEIGHT = 4 })
+assert(game.PlaceId == CFG.PLACE, "NAHH broski this shit so laced 😶‍🌫️")
+local RS = game:GetService("ReplicatedStorage")
+local Tags = game:GetService("CollectionService")
+local Http = game:GetService("HttpService")
+local E = getgenv()
+if E.PersonalHollowFloors then E.PersonalHollowFloors.Stop() end
+local names = { "MazeLock", "ThreePillar", "Tomb", "ZombieBridge", "LightMirror", "WitchesBrew", "JackOLantern", "Offerings", "LeverWalls" }
+local state = { phase = "starting", floor = 0, stopped = false, paused = false, completed = {}, finaleComplete = false, error = nil }
+local worker: thread? = nil
+local panel: TextButton? = nil
+local gui = Instance.new("ScreenGui")
+gui.Name = "PersonalHollowFloors"
+gui.ResetOnSpawn = false
+gui.Parent = P.PlayerGui
+local label = Instance.new("TextButton")
+label.Size = UDim2.fromOffset(440, 90)
+label.Position = UDim2.fromOffset(20, 150)
+label.TextWrapped = true
+label.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+label.TextColor3 = Color3.new(1, 1, 1)
+label.Parent = gui
+panel = label
+local function stopHelpers()
+    for _, key in { "TzarHubQuest", "TzarHubPillarQuest" } do
+        local h = E[key]
+        if h and h.Stop then h.Stop() end
+        if h and typeof(h.thread) == "thread" and h.thread ~= coroutine.running() and coroutine.status(h.thread) == "suspended" then task.cancel(h.thread) end
+    end
+end
+local function status(message: string)
+    state.phase = message
+    if panel then panel.Text = "The Hollow | " .. message .. "\nFloor " .. state.floor .. " | click: Pause/Resume | Stop: getgenv().PersonalHollowFloors.Stop()" end
+    print("[PERSONAL FLOORS]", state.floor, message)
+end
+local connection: RBXScriptConnection? = nil
+local function stop()
+    state.stopped = true
+    stopHelpers()
+    if worker and worker ~= coroutine.running() and coroutine.status(worker) == "suspended" then task.cancel(worker) end
+    if connection then connection:Disconnect(); connection = nil end
+    gui:Destroy()
+    panel = nil
+end
+local function check()
+    assert(not state.stopped, "Stopped")
+    assert(game:GetService("NetworkClient"):FindFirstChildOfClass("ClientReplicator"), "Disconnected; reconnect and rerun")
+    while state.paused do task.wait(CFG.WAIT); assert(not state.stopped, "Stopped") end
+    local h = P.Character and P.Character:FindFirstChildOfClass("Humanoid")
+    assert(h and h.Health > 0, "Character dead; waiting for recovery")
+end
+local function waitFor(predicate, timeout: number?)
+    local untilTime = os.clock() + (timeout or CFG.ACK)
+    repeat check(); if predicate() then return end; task.wait(CFG.WAIT) until os.clock() > untilTime
+    error("No server progress: " .. state.phase)
+end
+local function character()
+    return require(RS:FindFirstChild("ClientState", true)).getState("CurrentCharacter")
+end
+local function move(pos: Vector3, look: Vector3?)
+    check()
+    local c = character()
+    assert(c, "Native character unavailable")
+    c:teleport(pos, look or Vector3.new(0, 0, -1))
+    task.wait(CFG.SETTLE)
+    check()
+end
+local function invoke(name: string, ...)
+    check()
+    local r = RS.Remotes:FindFirstChild(name)
+    assert(r and r:IsA("RemoteFunction"), "Native remote unavailable: " .. name)
+    return r:InvokeServer(...)
+end
+local function saved(name: string): boolean
+    return table.find(Http:JSONDecode(P.PlayerGui.Data.SolvedPuzzles.Value), name) ~= nil
+end
+local function tagged(tag: string)
+    return Tags:GetTagged(tag)[1]
+end
+local function exitFloor(name: string?)
+    local exit = nil
+    waitFor(function() exit = tagged("%MazeElevatorExit"); return exit ~= nil end)
+    move((exit.CFrame * CFrame.new(0, 0, 6)).Position, exit.CFrame.LookVector)
+    local destination = exit.ExitMaze:InvokeServer()
+    assert(typeof(destination) == "CFrame", "Server rejected extraction")
+    move(destination.Position, destination.LookVector)
+    if name then waitFor(function() return saved(name) end) end
+end
+local function enter(floor: number)
+    if P:GetAttribute("InMaze") == floor or (floor == 10 and P:GetAttribute("InFinale")) then return end
+    if P:GetAttribute("InMaze") then exitFloor(nil) end
+    local entrance = nil
+    for _, v in workspace:GetDescendants() do if v.Name == "MazeElevatorEntrance" and v:FindFirstChild("EnterMaze") then entrance = v; break end end
+    if not entrance then
+        move(Vector3.new(185, 6, -979))
+        waitFor(function()
+            for _, v in workspace:GetDescendants() do if v.Name == "MazeElevatorEntrance" and v:FindFirstChild("EnterMaze") then entrance = v; return true end end
+            return false
+        end)
+    end
+    move((entrance.CFrame * CFrame.new(0, 0, 6)).Position, entrance.CFrame.LookVector)
+    local spawn = entrance.EnterMaze:InvokeServer(floor)
+    assert(typeof(spawn) == "CFrame", "Floor locked or native entry rejected")
+    move((spawn * CFrame.new(0, 0, 12)).Position, spawn.LookVector)
+    waitFor(function() return P:GetAttribute("InMaze") == floor or (floor == 10 and P:GetAttribute("InFinale")) end)
+end
+local function puzzleRoom(floor: number)
+    local room = nil
+    waitFor(function()
+        for _, v in workspace:GetDescendants() do
+            if v:IsA("Model") and v.Name:sub(1, 3) == "GR_" and math.abs(v:GetPivot().Position.Z - floor * 2000) < 1000 then room = v; return true end
+        end
+        return false
+    end)
+    move(room:GetPivot().Position + Vector3.new(0, CFG.HEIGHT, 0))
+    task.wait(CFG.SETTLE)
+    return room
+end
+local function nativeObject(test)
+    for _, v in getgc(true) do if type(v) == "table" and test(v) then return v end end
+    return nil
+end
+local function runHelper(source: string, key: string, name: string)
+    assert(loadstring(source))()
+    waitFor(function()
+        local h = E[key]
+        if h and h.state and h.state.phase == "error" then error("Native helper failed: " .. name) end
+        return saved(name)
+    end, CFG.FLOOR_TIMEOUT)
+    stopHelpers()
+end
+local function tomb()
+    local records = {}
+    local graves = Tags:GetTagged("%TombStone")
+    assert(#graves > 0, "Graves not streamed")
+    for _, grave in graves do
+        move(grave.Position + Vector3.new(0, 3, 3))
+        local key = require(RS.SharedModules.TombRoster).key(grave)
+        local record = invoke("TombReveal", key)
+        if not record then task.wait(CFG.SETTLE); record = invoke("TombReveal", key) end
+        assert(type(record) == "table", "Grave unread")
+        table.insert(records, record)
+    end
+    table.sort(records, function(a, b) return a.Death - a.Birth < b.Death - b.Birth end)
+    local chest = tagged("%TombChest")
+    assert(chest, "Tomb chest not streamed")
+    move(chest:GetPivot().Position + Vector3.new(0, 3, 4))
+    local answer = {}
+    local slots = invoke("TombState").Slots
+    for i = 1, slots do answer[i] = records[i].Icon end
+    assert(invoke("TombGuess", answer).Result == "Correct", "Tomb rules or response changed")
+end
+local function bridge()
+    local b = nil
+    waitFor(function() b = nativeObject(function(v) return rawget(v, "startPlatform") and rawget(v, "grid") and rawget(v, "path") end); return b ~= nil end)
+    move(b.startPlatform.Position + Vector3.new(0, CFG.HEIGHT, 0))
+    waitFor(function() return b.state == "Play" end, CFG.ACK * 2)
+    for _, i in b.path do
+        assert(b.state == "Play", "Bridge round interrupted")
+        move(b.tiles[i].Rest.Position + Vector3.new(0, CFG.HEIGHT, 0))
+    end
+    move(b.endPlatform.Position + Vector3.new(0, CFG.HEIGHT, 0))
+    waitFor(function() return invoke("ZombieBridgePath").Solved == true end)
+end
+local function light(room)
+    local object = nil
+    waitFor(function()
+        for _, v in room:GetDescendants() do if v:FindFirstChild("Mirrors") and v:FindFirstChild("Source") then object = v; return true end end
+        return false
+    end)
+    local beam = require(RS.ClientModules.ReleasedPuzzles.LightMirror.LightBeam)
+    local layout = beam.layout(object)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Include
+    rp.FilterDescendantsInstances = { layout.Blockers }
+    local yaws, plan = {}, {}
+    local nodes = 0
+    local function search()
+        nodes += 1
+        if nodes > CFG.SEARCH_LIMIT then return false end
+        local trace = beam.trace(layout, yaws, rp)
+        if trace.Complete then return true end
+        if trace.Unknown then
+            local i = trace.Unknown
+            for t = 0, CFG.ROTATIONS - 1 do
+                plan[i] = t; yaws[i] = beam.yawFor(layout.Mirrors[i], t)
+                if search() then return true end
+            end
+            plan[i] = nil; yaws[i] = nil
+        end
+        return false
+    end
+    assert(search(), "No beam route within search budget")
+    local current = invoke("LightMirrorState")
+    for i, target in plan do
+        move(layout.Mirrors[i].Base.Position + Vector3.new(0, 3, 3))
+        for _ = 1, (target - current.Turns[i]) % CFG.ROTATIONS do
+            current.Turns = invoke("LightMirrorTurn", i)
+            assert(type(current.Turns) == "table", "Mirror turn rejected")
+            task.wait(CFG.WAIT)
+        end
+    end
+    task.wait(CFG.SETTLE)
+    assert(invoke("LightMirrorSolve") == true, "Beam solve rejected")
+    assert(invoke("LightMirrorState").Solved == true, "Beam server state unconfirmed")
+end
+local function brew()
+    local recipe = invoke("WitchesBrewRecipe")
+    local mouth = nil
+    waitFor(function() local v = nativeObject(function(t) return rawget(t, "mouthPart") and rawget(t, "recipe") end); mouth = v and v.mouthPart; return mouth ~= nil end)
+    for step = recipe.Step + 1, #recipe.Recipe do
+        local key = nil
+        for k, color in recipe.Pads do if color == recipe.Recipe[step] then key = k; break end end
+        assert(key, "Ingredient missing")
+        local xyz = string.split(key, ",")
+        move(Vector3.new(tonumber(xyz[1]), tonumber(xyz[2]) + CFG.HEIGHT, tonumber(xyz[3])))
+        assert(invoke("WitchesBrewGrab", key) == true, "Ingredient grab rejected")
+        move(mouth.Position + Vector3.new(0, 2, 3))
+        local result = invoke("WitchesBrewDrop")
+        assert(type(result) == "table" and result.Correct, "Recipe step rejected")
+    end
+    assert(invoke("WitchesBrewRecipe").Solved, "Recipe unconfirmed")
+end
+local function pumpkins()
+    local brazier = tagged("%Brazier")
+    assert(brazier, "Brazier not streamed")
+    move(brazier.Position + Vector3.new(0, 3, 3))
+    brazier.LightRemote:FireServer()
+    local torch = nil
+    waitFor(function() torch = P.Backpack:FindFirstChild("Torch") or P.Character:FindFirstChild("Torch"); return torch ~= nil end)
+    P.Character:FindFirstChildOfClass("Humanoid"):EquipTool(torch)
+    waitFor(function() return torch:GetAttribute("Lit") == true end)
+    local count = 0
+    for _, v in Tags:GetTagged("%JackOLantern") do
+        if v:GetAttribute(tostring(P.UserId)) then
+            count += 1
+            if not v:GetAttribute("Lit_" .. P.UserId) then move(v.Position + Vector3.new(0, 3, 3)); assert(v.LightRemote:InvokeServer(), "Pumpkin rejected") end
+        end
+    end
+    assert(count > 0, "Assigned pumpkins not streamed; retry after exploration")
+end
+local function offerings()
+    local s = invoke("OfferingsState")
+    local altar = tagged("%OfferingAltar")
+    assert(altar, "Altar missing")
+    for key, item in s.Needs do
+        if not s.Placed[key] then
+            local pad = nil
+            for _, v in Tags:GetTagged("%OfferingPedestal") do if tostring(v:GetAttribute(tostring(P.UserId))) == key then pad = v; break end end
+            assert(pad, "Assigned pedestal missing")
+            move(altar.Position + Vector3.new(0, 3, 4))
+            assert(invoke("OfferingsTake", item) == true, "Offering take rejected")
+            move(pad.Position + Vector3.new(0, 3, 0))
+            assert(invoke("OfferingsPlace", key) == true, "Offering placement rejected")
+        end
+    end
+    assert(invoke("OfferingsState").Solved, "Offerings unconfirmed")
+end
+local function walls()
+    local s = invoke("LeverWallsState")
+    for i = s.Opened + 1, #s.Walls do
+        local wanted = s.Walls[i]
+        local key = nil
+        for k, icon in s.Levers do if icon == wanted then key = k; break end end
+        local lever = nativeObject(function(v) return rawget(v, "iconId") == wanted and tostring(rawget(v, "key")) == key and rawget(v, "adornee") end)
+        assert(lever, "Assigned lever missing")
+        move(lever.adornee.Position + Vector3.new(0, 3, 3))
+        assert(invoke("LeverWallsPull", key).Correct, "Lever sequence rejected")
+    end
+    local relic = nativeObject(function(v) return rawget(v, "prompt") and rawget(v, "adornee") and v.prompt.ActionText == "Take Rune" end)
+    assert(relic, "Rune missing")
+    move(relic.adornee.Position + Vector3.new(0, 3, 3))
+    assert(invoke("LeverWallsClaim") == true, "Rune rejected")
+    assert(invoke("LeverWallsState").Solved, "Wall puzzle unconfirmed")
+end
+local function finale()
+    if P.PlayerGui.Data.FinaleComplete.Value then state.finaleComplete = true; status("Finale already saved"); return end
+    state.floor = 10
+    enter(10)
+    local deadline = os.clock() + CFG.FINAL_TIMEOUT
+    local lastIndex, stale = -1, 0
+    while os.clock() < deadline do
+        check()
+        if P.PlayerGui.Data.FinaleComplete.Value then state.finaleComplete = true; return end
+        local obj = invoke("FinaleObjective")
+        assert(type(obj) == "table", "Finale objective unavailable")
+        status("Finale: " .. tostring(obj.text))
+        if obj.index == lastIndex then stale += 1 else stale = 0 end
+        lastIndex = obj.index
+        assert(stale < CFG.MAX_ATTEMPTS + 1, "Finale no progress; gate or scene requires inspection")
+        if obj.index == 16 then
+            local gate = workspace.FinaleZone:FindFirstChild("ThirdGate")
+            assert(gate and gate.CanCollide == false, "Final gate closed; wait for native schedule")
+            local portal = tagged("%FinalExitPortal")
+            assert(portal, "Final exit not streamed")
+            move(portal.Position, portal.CFrame.LookVector)
+            RS.Remotes.FinalExitEnter:FireServer(portal)
+            waitFor(function() return P.PlayerGui.Data.FinaleComplete.Value end)
+        else
+            for _, v in workspace.FinaleZone:GetChildren() do
+                if v:IsA("BasePart") and (v.Name == "FirstGate" or v.Name == "SecondGate") and v.CanCollide then error("Finale gate closed; wait for native schedule") end
+            end
+            local section = if obj.index <= 9 then obj.index else obj.index - 1
+            local portal = nil
+            waitFor(function()
+                for _, v in Tags:GetTagged("%WindowPortal") do if v:GetAttribute("SceneId") == "Section" .. section and v:FindFirstChild("WindowPortalTrigger") then portal = v; return true end end
+                return false
+            end)
+            move(portal.WindowPortalTrigger.Position, portal.CFrame.LookVector)
+            waitFor(function() return invoke("FinaleObjective").index ~= obj.index end)
+        end
+    end
+    error("Finale time limit")
+end
+local controller = { state = state, Stop = stop }
+E.PersonalHollowFloors = controller
+controller.Pause = function() state.paused = true; stopHelpers(); status("Paused; Resume reconstructs from server save") end
+controller.Resume = function()
+    stop()
+    assert(type(E.PersonalHollowFloorsSource) == "string", "Source missing; rerun the complete file")
+    assert(loadstring(E.PersonalHollowFloorsSource))()
+end
+connection = label.Activated:Connect(function() if state.paused then controller.Resume() else controller.Pause() end end)
+worker = task.spawn(function()
+    local ok, err = xpcall(function()
+        if E.TzarEventCluster and E.TzarEventCluster.Pause then E.TzarEventCluster.Pause() end
+        finale()
+        if P:GetAttribute("InFinale") then waitFor(function() return P:GetAttribute("InFinale") ~= true end, CFG.FINAL_TIMEOUT) end
+        for floor, name in names do
+            state.floor = floor
+            if saved(name) then state.completed[floor] = true; status(name .. " already saved"); continue end
+            local done = false
+            local issue = ""
+            for attempt = 1, CFG.MAX_ATTEMPTS do
+                check()
+                status(name .. " attempt " .. attempt)
+                local success, message = pcall(function()
+                    enter(floor)
+                    if floor == 1 then runHelper(MAZE_SOURCE, "TzarHubQuest", name); return end
+                    if floor == 2 then runHelper(PILLAR_SOURCE, "TzarHubPillarQuest", name); return end
+                    local room = puzzleRoom(floor)
+                    if floor == 3 then tomb() elseif floor == 4 then bridge() elseif floor == 5 then light(room) elseif floor == 6 then brew() elseif floor == 7 then pumpkins() elseif floor == 8 then offerings() elseif floor == 9 then walls() end
+                    waitFor(function() return P:GetAttribute("HasRelic") == true end)
+                    exitFloor(name)
+                end)
+                stopHelpers()
+                if success and saved(name) then done = true; break end
+                issue = tostring(message)
+                if state.stopped then return end
+                local deadline = os.clock() + CFG.ACK
+                repeat task.wait(CFG.WAIT) until (P.Character and P.Character:FindFirstChildOfClass("Humanoid") and P.Character:FindFirstChildOfClass("Humanoid").Health > 0) or os.clock() > deadline
+            end
+            assert(done, name .. ": " .. issue)
+            state.completed[floor] = true
+            status(name .. " server-saved")
+        end
+        for _, name in names do assert(saved(name), "Missing saved puzzle: " .. name) end
+        assert(P.PlayerGui.Data.FinaleComplete.Value, "Finale not saved")
+        state.finaleComplete = true
+        state.serverProof = { userId = P.UserId, solvedPuzzles = Http:JSONDecode(P.PlayerGui.Data.SolvedPuzzles.Value), completedFloors = P:GetAttribute("CompletedFloors"), finaleComplete = true }
+        status("ALL NORMAL FLOORS SERVER-CONFIRMED")
+        print("[PERSONAL FLOORS PROOF]", Http:JSONEncode(state.serverProof))
+    end, debug.traceback)
+    stopHelpers()
+    if not ok and not state.stopped then state.error = tostring(err); status("Stopped: " .. tostring(err)); warn("[PERSONAL FLOORS]", err) end
 end)
---[[rscripts:analytics:end]]
-
-loadstring(game:HttpGet("https://raw.githubusercontent.com/sudaisontopxd/Pearl/refs/heads/main/TheHollow"))()
+controller.thread = worker
